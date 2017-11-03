@@ -1,0 +1,234 @@
+composition
+
+import Fugue.AWS as AWS
+import Fugue.AWS.AutoScaling as AutoScaling
+import Fugue.AWS.EC2 as EC2
+import Fugue.AWS.ECS as ECS
+import Fugue.AWS.ELB as ELB
+import Fugue.AWS.IAM as IAM
+import Fugue.AWS.Pattern.Network as Network
+import Fugue.Random as Random
+
+name: @override "splunk"
+region: @override AWS.Us-east-1
+keyName: @override "Demo" 
+random: Random.randomString{length: 8}
+
+ecsNetwork: Network.public {
+  name: name ++ "-" ++ random ++ "-network",
+  region: region,
+  cidr: "10.0.0.0/16",
+  subnets: [
+    (AWS.A, "10.0.1.0/24"),
+    (AWS.B, "10.0.2.0/24"),
+  ],
+}
+
+ecsCluster: ECS.Cluster.new {
+  name: name ++ "-" ++ random ++ "-cluster",
+  region: ecsNetwork.region,
+}
+
+ecsClusterInstances: AutoScaling.AutoScalingGroup.new {
+  name:   name ++ "-" ++ random ++ "-instance",
+  subnets: ecsNetwork.publicSubnets,
+  loadBalancers: [ecsELB],
+  minSize: 2,
+  maxSize: 2,
+  defaultCooldown: 300,
+  launchConfiguration: AutoScaling.LaunchConfiguration.new {
+    image: lookupEcsOptimizedImage(ecsNetwork.region),
+    securityGroups: [
+      EC2.SecurityGroup.new {
+        vpc: ecsNetwork.vpc,
+        description: "ECS Cluster Container Instances",
+        ipPermissions: [
+          EC2.IpPermission.http(
+            EC2.IpPermission.Target.securityGroups([ecsELBSg])
+          ),
+          EC2.IpPermission.tcp(8000,
+            EC2.IpPermission.Target.securityGroups([ecsELBSg])
+          ),
+          EC2.IpPermission.tcp(8081,
+            EC2.IpPermission.Target.securityGroups([ecsELBSg])
+          ),
+          EC2.IpPermission.tcp(8088,
+            EC2.IpPermission.Target.securityGroups([ecsELBSg])
+          )
+        ],
+      }
+    ],
+    keyName: keyName,
+    instanceType: EC2.T2_large,
+    associatePublicIpAddress: True,
+    iamInstanceProfile: IAM.InstanceProfile.new {
+      instanceProfileName: name ++ "-" ++ random ++ "-profile",
+      roles: [ecsClusterInstanceRole],
+    },
+    userData: Template.render {
+      template: "#! /bin/bash
+                \echo -n \"ECS_CLUSTER={{cluster}}\n\" > /etc/ecs/ecs.config",
+      data: {cluster: ecsCluster.(ECS.Cluster).clusterName},
+    }
+  },
+  healthCheckType: AutoScaling.Ec2,
+}
+
+ecsClusterInstanceRole: IAM.Role.new {
+  roleName: name ++ "-" ++ random ++ "-instance-role",
+  assumeRolePolicyDocument: IAM.Policy.AssumeRole.ec2,
+  managedPolicies: [
+    IAM.ManagedPolicy.external("arn:aws:iam::aws:policy/service-role/AmazonEC2ContainerServiceforEC2Role"),
+  ],
+}
+
+ecsServiceRole: IAM.Role.new {
+  roleName: name ++ "-" ++ random ++ "-service-role",
+  assumeRolePolicyDocument: '{
+\  "Version": "2008-10-17",
+\  "Statement": [
+\    {
+\      "Sid": "",
+\      "Effect": "Allow",
+\      "Principal": {
+\        "Service": "ecs.amazonaws.com"
+\      },
+\      "Action": "sts:AssumeRole"
+\    }
+\  ]
+\}',
+  managedPolicies: [
+    IAM.ManagedPolicy.external("arn:aws:iam::aws:policy/service-role/AmazonEC2ContainerServiceRole"),
+  ]
+}
+
+
+ecsELBSg: EC2.SecurityGroup.new {
+  vpc: ecsNetwork.vpc,
+  description: "ECS Test Cluster Container Instances",
+  ipPermissions: [
+    EC2.IpPermission.http(
+      EC2.IpPermission.Target.all
+    ),
+    EC2.IpPermission.https(
+      EC2.IpPermission.Target.all
+    ),
+    EC2.IpPermission.tcp(8081,
+      EC2.IpPermission.Target.all
+    ),
+    EC2.IpPermission.tcp(8088,
+      EC2.IpPermission.Target.all
+    ),
+  ],
+}
+
+ecsELB: ELB.LoadBalancer.new {
+  loadBalancerName: name ++ "-" ++ random ++ "-elb",
+  subnets: ecsNetwork.publicSubnets,
+  healthCheck: ELB.HealthCheck.tcp {
+    port: 8000,
+    interval: 15,
+    timeout: 3,
+    unhealthyThreshold: 3,
+    healthyThreshold: 3,
+  },
+  securityGroups: [ecsELBSg],
+  scheme: ELB.InternetFacing,
+  crossZone: True,
+  listeners: [
+    ELB.Listener.new {
+      protocol: ELB.HTTP,
+      loadBalancerPort: 80,
+      instanceProtocol: ELB.HTTP,
+      instancePort: 8000,
+    },
+    ELB.Listener.new {
+      protocol: ELB.HTTP,
+      loadBalancerPort: 8081,
+      instanceProtocol: ELB.HTTP,
+      instancePort: 8081,
+    },
+    ELB.Listener.new {
+      protocol: ELB.HTTP,
+      loadBalancerPort: 8088,
+      instanceProtocol: ELB.HTTP,
+      instancePort: 8088,
+    },
+  ],
+}
+
+ecsService: ECS.Service.new {
+  name: name ++ "-" ++ random ++ "-service",
+  cluster: ecsCluster,
+  taskDefinition: ecsTask,
+  numDesired: 1,
+  deploymentConfiguration: ECS.DeploymentConfiguration.new {
+    maximumPercent: 200,
+    minimumHealthyPercent: 50,
+  },
+  placementConstraints: ECS.PlacementConstraint.oneTaskPerHost,
+}
+
+ecsTask:
+  let splunkContainer: ECS.ContainerDefinition.new {
+    name: name ++ "-" ++ random ++ "-task",
+    image: "splunk/splunk",
+    essential: True,
+    portMappings: [
+      ECS.PortMapping.tcp {
+        containerPort: 80,
+        hostPort: 80,
+      },
+      ECS.PortMapping.tcp {
+        containerPort: 443,
+        hostPort: 443,
+      },
+      ECS.PortMapping.tcp {
+        containerPort: 8000,
+        hostPort: 8000,
+      },
+      ECS.PortMapping.tcp {
+        containerPort: 8081,
+        hostPort: 8081,
+      },
+      ECS.PortMapping.tcp {
+        containerPort: 8088,
+        hostPort: 8088,
+      },
+    ],
+    memory: 500,
+    cpu: 10,
+    environment: {
+      "SPLUNK_START_ARGS": "--accept-license",
+    },
+  }
+  ECS.TaskDefinition.new {
+    family: name ++ "-" ++ random ++ "-task",
+    region: ecsNetwork.region,
+    networkMode: ECS.Bridge,
+    containerDefinitions: [
+      splunkContainer,
+    ],
+  }
+
+# Find the ECS-optimized image for a specific region.  Throws an error if there
+# is no such image.
+#
+# See also: <http://docs.aws.amazon.com/AmazonECS/latest/developerguide/ecs-optimized_AMI.html>.
+fun lookupEcsOptimizedImage(region: AWS.Region) -> String:
+  case region of
+    | AWS.Region.Us-east-2       -> "ami-34032e51"
+    | AWS.Region.Us-east-1       -> "ami-ec33cc96"
+    | AWS.Region.Us-west-2       -> "ami-29f80351"
+    | AWS.Region.Us-west-1       -> "ami-d5d0e0b5"
+    | AWS.Region.Eu-west-2       -> "ami-eb62708f"
+    | AWS.Region.Eu-west-1       -> "ami-13f7226a"
+    | AWS.Region.Eu-central-1    -> "ami-40d5672f"
+    | AWS.Region.Ap-northeast-2  -> "ami-7ee13b10"
+    | AWS.Region.Ap-northeast-1  -> "ami-21815747"
+    | AWS.Region.Ap-southeast-2  -> "ami-4f08e82d"
+    | AWS.Region.Ap-southeast-1  -> "ami-99f588fa"
+    | AWS.Region.Ca-central-1    -> "ami-9b54edff"
+    | _                                -> error(
+        "No ECS-optimized image for " ++ AWS.Region.toString(region)
+      )

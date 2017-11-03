@@ -1,0 +1,12 @@
+import Lwpkg as .
+
+app:
+  Package.new {
+    description: "",
+    version: Version.new(0,0,0),
+    dependencies: [
+     ("AppCluster", Version.new (0, 0, 0))
+    ]
+    modules: [
+    ]
+  }
