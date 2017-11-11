@@ -6,13 +6,21 @@ import Fugue.AWS.EC2 as EC2
 import Fugue.AWS.ECS as ECS
 import Fugue.AWS.ELB as ELB
 import Fugue.AWS.IAM as IAM
+import Fugue.AWS.Route53 as Route53
 import Fugue.AWS.Pattern.Network as Network
 import Fugue.Random as Random
 
 name: @override "splunk"
 region: @override AWS.Us-east-1
 keyName: @override "Demo" 
+hostedZone: @override Route53.HostedZone.external("Z3AQW0OFQD0ZDW")
+domainName: @override "illfunction.com"
+
 random: Random.randomString{length: 8}
+
+x: Debug.trace {
+  message: "Service: " ++ name ++ "-" ++ random ++ "." ++ domainName ++ "\n"
+}
 
 ecsNetwork: Network.public {
   name: name ++ "-" ++ random ++ "-network",
@@ -102,7 +110,6 @@ ecsServiceRole: IAM.Role.new {
   ]
 }
 
-
 ecsELBSg: EC2.SecurityGroup.new {
   vpc: ecsNetwork.vpc,
   description: "ECS Test Cluster Container Instances",
@@ -155,6 +162,15 @@ ecsELB: ELB.LoadBalancer.new {
       instancePort: 8088,
     },
   ],
+}
+
+ecsELBRoute53Alias: Route53.ResourceRecordSet.A.alias {
+  name: name ++ "-" ++ random ++ "." ++ domainName,
+  hostedZone: hostedZone,
+  target: Route53.AliasTarget.loadBalancer {
+    target: ecsELB,
+    evaluateTargetHealth: True,
+  }
 }
 
 ecsService: ECS.Service.new {
