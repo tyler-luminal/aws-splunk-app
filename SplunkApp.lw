@@ -162,7 +162,7 @@ ecsELB: ELB.LoadBalancer.new {
     ELB.Listener.new {
       protocol: ELB.HTTPS,
       loadBalancerPort: 443,
-      instancePort: 3000,
+      instancePort: 8000,
       instanceProtocol: ELB.HTTP,
       serverCertificate: serverCert
     },
