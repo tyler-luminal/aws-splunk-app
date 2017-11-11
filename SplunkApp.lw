@@ -13,13 +13,23 @@ import Fugue.Random as Random
 name: @override "splunk"
 region: @override AWS.Us-east-1
 keyName: @override "Demo" 
-hostedZone: @override Route53.HostedZone.external("Z3AQW0OFQD0ZDW")
 domainName: @override "illfunction.com"
+
+hostedZone: 
+  Route53.HostedZone.external(
+    "Z3AQW0OFQD0ZDW"
+  )
+
+serverCert: 
+  ELB.ListenerServerCertificate.external(
+    "arn:aws:acm:us-east-1:667025317700:certificate/64d58a7b-d3b1-4a7d-a73c-ba82f6c3f0e2"
+  )
 
 random: Random.randomString{length: 8}
 
 x: Debug.trace {
-  message: "Service: " ++ name ++ "-" ++ random ++ "." ++ domainName ++ "\n"
+  message: "Service: " ++ name ++ "-" ++ random ++ "." ++ domainName ++ "\n",
+  output: Debug.STDOUT
 }
 
 ecsNetwork: Network.public {
@@ -148,6 +158,13 @@ ecsELB: ELB.LoadBalancer.new {
       loadBalancerPort: 80,
       instanceProtocol: ELB.HTTP,
       instancePort: 8000,
+    },
+    ELB.Listener.new {
+      protocol: ELB.HTTPS,
+      loadBalancerPort: 443,
+      instancePort: 3000,
+      instanceProtocol: ELB.HTTP,
+      serverCertificate: serverCert
     },
     ELB.Listener.new {
       protocol: ELB.HTTP,
