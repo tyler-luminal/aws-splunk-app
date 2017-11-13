@@ -27,11 +27,6 @@ serverCert:
 
 random: Random.randomString{length: 8}
 
-x: Debug.trace {
-  message: "Service: " ++ name ++ "-" ++ random ++ "." ++ domainName ++ "\n",
-  output: Debug.STDOUT
-}
-
 ecsNetwork: Network.public {
   name: name ++ "-" ++ random ++ "-network",
   region: region,
@@ -51,8 +46,8 @@ ecsClusterInstances: AutoScaling.AutoScalingGroup.new {
   name:   name ++ "-" ++ random ++ "-instance",
   subnets: ecsNetwork.publicSubnets,
   loadBalancers: [ecsELB],
-  minSize: 2,
-  maxSize: 2,
+  minSize: 1,
+  maxSize: 1,
   defaultCooldown: 300,
   launchConfiguration: AutoScaling.LaunchConfiguration.new {
     image: lookupEcsOptimizedImage(ecsNetwork.region),
@@ -65,9 +60,6 @@ ecsClusterInstances: AutoScaling.AutoScalingGroup.new {
             EC2.IpPermission.Target.securityGroups([ecsELBSg])
           ),
           EC2.IpPermission.tcp(8000,
-            EC2.IpPermission.Target.securityGroups([ecsELBSg])
-          ),
-          EC2.IpPermission.tcp(8081,
             EC2.IpPermission.Target.securityGroups([ecsELBSg])
           ),
           EC2.IpPermission.tcp(8088,
@@ -130,9 +122,6 @@ ecsELBSg: EC2.SecurityGroup.new {
     EC2.IpPermission.https(
       EC2.IpPermission.Target.all
     ),
-    EC2.IpPermission.tcp(8081,
-      EC2.IpPermission.Target.all
-    ),
     EC2.IpPermission.tcp(8088,
       EC2.IpPermission.Target.all
     ),
@@ -144,9 +133,9 @@ ecsELB: ELB.LoadBalancer.new {
   subnets: ecsNetwork.publicSubnets,
   healthCheck: ELB.HealthCheck.tcp {
     port: 8000,
-    interval: 15,
+    interval: 10,
     timeout: 3,
-    unhealthyThreshold: 3,
+    unhealthyThreshold: 5,
     healthyThreshold: 3,
   },
   securityGroups: [ecsELBSg],
@@ -167,15 +156,10 @@ ecsELB: ELB.LoadBalancer.new {
       serverCertificate: serverCert
     },
     ELB.Listener.new {
-      protocol: ELB.HTTP,
-      loadBalancerPort: 8081,
-      instanceProtocol: ELB.HTTP,
-      instancePort: 8081,
-    },
-    ELB.Listener.new {
-      protocol: ELB.HTTP,
+      protocol: ELB.HTTPS,
       loadBalancerPort: 8088,
       instanceProtocol: ELB.HTTP,
+      serverCertificate: serverCert,
       instancePort: 8088,
     },
   ],
@@ -206,6 +190,7 @@ ecsTask:
   let splunkContainer: ECS.ContainerDefinition.new {
     name: name ++ "-" ++ random ++ "-task",
     image: "splunk/splunk",
+    memory: 7168,
     essential: True,
     portMappings: [
       ECS.PortMapping.tcp {
@@ -229,8 +214,6 @@ ecsTask:
         hostPort: 8088,
       },
     ],
-    memory: 500,
-    cpu: 10,
     environment: {
       "SPLUNK_START_ARGS": "--accept-license",
     },
@@ -265,3 +248,7 @@ fun lookupEcsOptimizedImage(region: AWS.Region) -> String:
     | _                                -> error(
         "No ECS-optimized image for " ++ AWS.Region.toString(region)
       )
+
+x: Debug.trace {
+  message: "Service: " ++ name ++ "-" ++ random ++ "." ++ domainName ++ "\n",
+}
